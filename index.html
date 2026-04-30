@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>medHero by Shonga</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; margin: 0; padding: 0; }
+    body { background: #0a0a0f; }
+    input::placeholder { color: #3a3a3a; }
+    @keyframes pulse { 0%, 100% { opacity: 1 } 50% { opacity: 0.4 } }
+    .flip-card { perspective: 1200px; }
+    .flip-inner {
+      position: relative;
+      transform-style: preserve-3d;
+      transition: transform 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+      min-height: 240px;
+    }
+    .flip-inner.flipped { transform: rotateY(180deg); }
+    .flip-front, .flip-back {
+      position: absolute; inset: 0;
+      backface-visibility: hidden;
+      -webkit-backface-visibility: hidden;
+      border-radius: 10px;
+      padding: 36px 32px;
+      display: flex; flex-direction: column; justify-content: space-between;
+      min-height: 240px;
+    }
+    .flip-back { transform: rotateY(180deg); }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+    const { useState, useRef } = React;
+
+    const SUBJECTS = [
+      { id: "surgery", label: "Surgery", icon: "⚕️", color: "#e63946" },
+      { id: "paediatrics", label: "Paediatrics", icon: "👶", color: "#2a9d8f" },
+      { id: "obs_gyn", label: "Obs & Gynae", icon: "🌸", color: "#e76f51" },
+      { id: "internal_medicine", label: "Internal Medicine", icon: "🫀", color: "#457b9d" },
+    ];
+
+    const SYSTEM_PROMPT = `You are a medical education expert specializing in exam preparation for medical students. Generate exactly 6 high-yield flashcards on the given topic for the given subject.
+
+Return ONLY a JSON array with this exact structure, no markdown, no preamble:
+[
+  {
+    "question": "Clinical question here",
+    "answer": "Concise, exam-focused answer",
+    "tag": "short category tag (e.g. Pathophysiology, Management, Diagnosis, Complications, Pharmacology)"
+  }
+]
+
+Make the questions clinically relevant, scenario-based where appropriate, and exam-oriented. Answers should be concise but complete. Cover a mix of categories.`;
+
+    function App() {
+      const [subject, setSubject] = useState(null);
+      const [topic, setTopic] = useState("");
+      const [cards, setCards] = useState([]);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState("");
+      const [currentIdx, setCurrentIdx] = useState(0);
+      const [flipped, setFlipped] = useState(false);
+      const [known, setKnown] = useState(new Set());
+      const [review, setReview] = useState(new Set());
+      const [mode, setMode] = useState("home");
+      const [animDir, setAnimDir] = useState(null);
+
+      const selectedSubject = SUBJECTS.find(s => s.id === subject);
+      const accentColor = selectedSubject?.color || "#e63946";
+      const card = cards[currentIdx];
+      const progress = cards.length > 0 ? ((currentIdx + 1) / cards.length) * 100 : 0;
+
+      async function generateCards() {
+        if (!subject || !topic.trim()) return;
+        setLoading(true);
+        setError("");
+        try {
+          const res = await fetch("https://api.anthropic.com/v1/messages", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              model: "claude-sonnet-4-20250514",
+              max_tokens: 1000,
+              system: SYSTEM_PROMPT,
+              messages: [{ role: "user", content: `Subject: ${selectedSubject.label}\nTopic: ${topic}` }]
+            })
+          });
+          const data = await res.json();
+          const text = data.content?.find(b => b.type === "text")?.text || "[]";
+          const parsed = JSON.parse(text.replace(/```json|```/g, "").trim());
+          setCards(parsed);
+          setCurrentIdx(0);
+          setFlipped(false);
+          setKnown(new Set());
+          setReview(new Set());
+          setMode("cards");
+        } catch (e) {
+          setError("Failed to generate cards. Please try again.");
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      function navigate(dir) {
+        setAnimDir(dir);
+        setFlipped(false);
+        setTimeout(() => {
+          setCurrentIdx(i => Math.max(0, Math.min(cards.length - 1, i + dir)));
+          setAnimDir(null);
+        }, 200);
+      }
+
+      function markCard(type) {
+        const idx = currentIdx;
+        if (type === "known") {
+          setKnown(s => { const n = new Set(s); n.add(idx); return n; });
+          setReview(s => { const n = new Set(s); n.delete(idx); return n; });
+        } else {
+          setReview(s => { const n = new Set(s); n.add(idx); return n; });
+          setKnown(s => { const n = new Set(s); n.delete(idx); return n; });
+        }
+        if (currentIdx < cards.length - 1) navigate(1);
+        else setMode("summary");
+      }
+
+      function restart() {
+        setMode("home"); setCards([]); setTopic(""); setSubject(null); setFlipped(false);
+      }
+
+      const btn = (onClick, disabled, children, extraStyle = {}) => (
+        <button onClick={onClick} disabled={disabled} style={{
+          fontFamily: "Georgia, serif", cursor: disabled ? "default" : "pointer",
+          transition: "all 0.2s", ...extraStyle
+        }}>{children}</button>
+      );
+
+      return (
+        <div style={{ minHeight: "100vh", background: "#0a0a0f", fontFamily: "Georgia, 'Times New Roman', serif",
+          color: "#f0ede8", display: "flex", flexDirection: "column", alignItems: "center",
+          padding: "0 16px 60px", position: "relative", overflow: "hidden" }}>
+
+          <div style={{ position: "fixed", inset: 0, pointerEvents: "none", zIndex: 0,
+            background: `radial-gradient(ellipse at 20% 20%, ${accentColor}18 0%, transparent 60%),
+              radial-gradient(ellipse at 80% 80%, #1a1a2e 0%, transparent 60%)` }} />
+
+          {/* Header */}
+          <header style={{ width: "100%", maxWidth: 680, paddingTop: 36, paddingBottom: 8,
+            display: "flex", alignItems: "flex-end", justifyContent: "space-between",
+            position: "relative", zIndex: 2, borderBottom: "1px solid #222" }}>
+            <div>
+              <div style={{ fontSize: 11, letterSpacing: 6, color: "#666", textTransform: "uppercase", marginBottom: 4 }}>
+                Medical Flashcards
+              </div>
+              <h1 style={{ margin: 0, fontSize: 32, fontWeight: 700, letterSpacing: "-0.5px", color: "#f0ede8" }}>
+                med<span style={{ color: accentColor }}>Hero</span>
+              </h1>
+              <div style={{ fontSize: 10, letterSpacing: 3, color: "#444", marginTop: 3, textTransform: "uppercase" }}>
+                by Shonga
+              </div>
+            </div>
+            {mode !== "home" && (
+              <button onClick={restart} style={{ background: "none", border: "1px solid #333", color: "#888",
+                padding: "6px 14px", borderRadius: 4, cursor: "pointer", fontSize: 12,
+                letterSpacing: 1, fontFamily: "inherit" }}>
+                ← New Session
+              </button>
+            )}
+          </header>
+
+          {/* HOME */}
+          {mode === "home" && (
+            <main style={{ width: "100%", maxWidth: 680, marginTop: 48, position: "relative", zIndex: 2 }}>
+              <p style={{ color: "#666", fontSize: 15, lineHeight: 1.6, marginBottom: 40 }}>
+                Choose a subject and type any topic — AI will generate 6 high-yield exam cards instantly.
+              </p>
+
+              <div style={{ marginBottom: 32 }}>
+                <div style={{ fontSize: 11, letterSpacing: 4, color: "#555", textTransform: "uppercase", marginBottom: 14 }}>
+                  01 — Select Subject
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  {SUBJECTS.map(s => (
+                    <button key={s.id} onClick={() => setSubject(s.id)} style={{
+                      background: subject === s.id ? `${s.color}18` : "#111",
+                      border: `1px solid ${subject === s.id ? s.color : "#222"}`,
+                      color: subject === s.id ? s.color : "#888",
+                      padding: "14px 18px", borderRadius: 6, cursor: "pointer",
+                      textAlign: "left", fontFamily: "inherit", fontSize: 14,
+                      display: "flex", alignItems: "center", gap: 10
+                    }}>
+                      <span style={{ fontSize: 18 }}>{s.icon}</span>
+                      <span>{s.label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ marginBottom: 32 }}>
+                <div style={{ fontSize: 11, letterSpacing: 4, color: "#555", textTransform: "uppercase", marginBottom: 14 }}>
+                  02 — Enter Topic
+                </div>
+                <input
+                  value={topic}
+                  onChange={e => setTopic(e.target.value)}
+                  onKeyDown={e => e.key === "Enter" && !loading && subject && topic.trim() && generateCards()}
+                  placeholder={subject ? `e.g. ${selectedSubject.label === "Surgery" ? "Appendicitis" : selectedSubject.label === "Paediatrics" ? "Febrile Seizures" : selectedSubject.label === "Obs & Gynae" ? "Pre-eclampsia" : "Heart Failure"}` : "Select a subject first..."}
+                  disabled={!subject}
+                  style={{ width: "100%", padding: "14px 18px", background: "#111",
+                    border: `1px solid #333`, borderRadius: 6, color: "#f0ede8",
+                    fontFamily: "inherit", fontSize: 15, outline: "none",
+                    opacity: subject ? 1 : 0.5 }}
+                />
+              </div>
+
+              {error && <div style={{ color: "#e63946", fontSize: 13, marginBottom: 16 }}>{error}</div>}
+
+              <button onClick={generateCards} disabled={!subject || !topic.trim() || loading} style={{
+                width: "100%", padding: "16px",
+                background: subject && topic.trim() && !loading ? accentColor : "#1a1a1a",
+                border: "none", borderRadius: 6,
+                color: subject && topic.trim() && !loading ? "#fff" : "#444",
+                fontSize: 14, letterSpacing: 2, textTransform: "uppercase",
+                fontFamily: "inherit", cursor: subject && topic.trim() && !loading ? "pointer" : "default",
+                fontWeight: 600
+              }}>
+                {loading ? "Generating Cards..." : "Generate Flashcards →"}
+              </button>
+
+              {loading && (
+                <div style={{ textAlign: "center", marginTop: 24, color: "#555", fontSize: 13,
+                  letterSpacing: 2, animation: "pulse 1.5s infinite" }}>
+                  Preparing your cards...
+                </div>
+              )}
+            </main>
+          )}
+
+          {/* CARDS */}
+          {mode === "cards" && card && (
+            <main style={{ width: "100%", maxWidth: 680, marginTop: 40, position: "relative", zIndex: 2 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <div style={{ fontSize: 11, letterSpacing: 3, color: accentColor, textTransform: "uppercase" }}>
+                  {selectedSubject?.icon} {selectedSubject?.label} — {topic}
+                </div>
+                <div style={{ fontSize: 12, color: "#555" }}>{currentIdx + 1} / {cards.length}</div>
+              </div>
+
+              <div style={{ height: 2, background: "#1a1a1a", borderRadius: 1, marginBottom: 28, overflow: "hidden" }}>
+                <div style={{ height: "100%", background: accentColor, width: `${progress}%`,
+                  borderRadius: 1, transition: "width 0.4s ease" }} />
+              </div>
+
+              <div style={{ display: "flex", gap: 6, justifyContent: "center", marginBottom: 28 }}>
+                {cards.map((_, i) => (
+                  <div key={i} style={{
+                    width: i === currentIdx ? 20 : 6, height: 6, borderRadius: 3,
+                    background: known.has(i) ? "#2a9d8f" : review.has(i) ? "#e63946" : i === currentIdx ? accentColor : "#222",
+                    transition: "all 0.3s"
+                  }} />
+                ))}
+              </div>
+
+              <div className="flip-card" onClick={() => setFlipped(f => !f)} style={{
+                cursor: "pointer", userSelect: "none", marginBottom: 24,
+                transform: animDir === 1 ? "translateX(-30px)" : animDir === -1 ? "translateX(30px)" : "none",
+                opacity: animDir ? 0 : 1, transition: "transform 0.2s, opacity 0.2s"
+              }}>
+                <div className={`flip-inner${flipped ? " flipped" : ""}`}>
+                  <div className="flip-front" style={{ background: "#111", border: `1px solid ${accentColor}33` }}>
+                    <div>
+                      <div style={{ display: "inline-block", padding: "3px 10px", background: `${accentColor}22`,
+                        borderRadius: 3, fontSize: 10, letterSpacing: 2, color: accentColor,
+                        textTransform: "uppercase", marginBottom: 20 }}>
+                        {card.tag}
+                      </div>
+                      <p style={{ margin: 0, fontSize: 18, lineHeight: 1.6, color: "#f0ede8", fontWeight: 500 }}>
+                        {card.question}
+                      </p>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#444", letterSpacing: 2, textTransform: "uppercase" }}>
+                      Tap to reveal answer
+                    </div>
+                  </div>
+                  <div className="flip-back" style={{ background: `${accentColor}0d`, border: `1px solid ${accentColor}55` }}>
+                    <div>
+                      <div style={{ display: "inline-block", padding: "3px 10px", background: `${accentColor}22`,
+                        borderRadius: 3, fontSize: 10, letterSpacing: 2, color: accentColor,
+                        textTransform: "uppercase", marginBottom: 20 }}>
+                        Answer
+                      </div>
+                      <p style={{ margin: 0, fontSize: 16, lineHeight: 1.8, color: "#f0ede8" }}>
+                        {card.answer}
+                      </p>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#444", letterSpacing: 2, textTransform: "uppercase" }}>
+                      Tap to flip back
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {flipped && (
+                <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                  <button onClick={() => markCard("review")} style={{
+                    flex: 1, padding: "13px", background: "#1a0a0a",
+                    border: "1px solid #e6394655", borderRadius: 6, color: "#e63946",
+                    fontSize: 13, letterSpacing: 1, fontFamily: "inherit", cursor: "pointer" }}>
+                    ✗ Review Again
+                  </button>
+                  <button onClick={() => markCard("known")} style={{
+                    flex: 1, padding: "13px", background: "#0a1a18",
+                    border: "1px solid #2a9d8f55", borderRadius: 6, color: "#2a9d8f",
+                    fontSize: 13, letterSpacing: 1, fontFamily: "inherit", cursor: "pointer" }}>
+                    ✓ Got It
+                  </button>
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => navigate(-1)} disabled={currentIdx === 0} style={{
+                  flex: 1, padding: "11px", background: "none", border: "1px solid #222",
+                  borderRadius: 6, color: currentIdx === 0 ? "#333" : "#666",
+                  fontSize: 13, fontFamily: "inherit", cursor: currentIdx === 0 ? "default" : "pointer" }}>
+                  ← Prev
+                </button>
+                <button onClick={() => navigate(1)} disabled={currentIdx === cards.length - 1} style={{
+                  flex: 1, padding: "11px", background: "none", border: "1px solid #222",
+                  borderRadius: 6, color: currentIdx === cards.length - 1 ? "#333" : "#666",
+                  fontSize: 13, fontFamily: "inherit", cursor: currentIdx === cards.length - 1 ? "default" : "pointer" }}>
+                  Next →
+                </button>
+              </div>
+            </main>
+          )}
+
+          {/* SUMMARY */}
+          {mode === "summary" && (
+            <main style={{ width: "100%", maxWidth: 680, marginTop: 48, position: "relative", zIndex: 2 }}>
+              <div style={{ fontSize: 11, letterSpacing: 4, color: "#555", textTransform: "uppercase", marginBottom: 8 }}>
+                Session Complete
+              </div>
+              <h2 style={{ margin: "0 0 8px", fontSize: 28, fontWeight: 700 }}>{topic}</h2>
+              <div style={{ fontSize: 13, color: "#555", marginBottom: 40 }}>{selectedSubject?.label}</div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 40 }}>
+                <div style={{ background: "#0a1a18", border: "1px solid #2a9d8f33", borderRadius: 8, padding: "24px", textAlign: "center" }}>
+                  <div style={{ fontSize: 40, fontWeight: 700, color: "#2a9d8f" }}>{known.size}</div>
+                  <div style={{ fontSize: 11, letterSpacing: 3, color: "#2a9d8f88", textTransform: "uppercase", marginTop: 4 }}>Got It</div>
+                </div>
+                <div style={{ background: "#1a0a0a", border: "1px solid #e6394633", borderRadius: 8, padding: "24px", textAlign: "center" }}>
+                  <div style={{ fontSize: 40, fontWeight: 700, color: "#e63946" }}>{review.size}</div>
+                  <div style={{ fontSize: 11, letterSpacing: 3, color: "#e6394688", textTransform: "uppercase", marginTop: 4 }}>Review</div>
+                </div>
+              </div>
+
+              {review.size > 0 && (
+                <div style={{ marginBottom: 32 }}>
+                  <div style={{ fontSize: 11, letterSpacing: 3, color: "#e63946", textTransform: "uppercase", marginBottom: 16 }}>
+                    Cards to Review
+                  </div>
+                  {cards.filter((_, i) => review.has(i)).map((c, i) => (
+                    <div key={i} style={{ background: "#111", border: "1px solid #e6394622", borderRadius: 6, padding: "16px 20px", marginBottom: 8 }}>
+                      <div style={{ fontSize: 10, color: "#e6394688", letterSpacing: 2, textTransform: "uppercase", marginBottom: 6 }}>{c.tag}</div>
+                      <div style={{ fontSize: 14, color: "#ccc", marginBottom: 8 }}>{c.question}</div>
+                      <div style={{ fontSize: 13, color: "#888", lineHeight: 1.6 }}>{c.answer}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button onClick={() => { setCurrentIdx(0); setFlipped(false); setKnown(new Set()); setReview(new Set()); setMode("cards"); }} style={{
+                  flex: 1, padding: "14px", background: accentColor, border: "none", borderRadius: 6,
+                  color: "#fff", fontSize: 13, letterSpacing: 2, textTransform: "uppercase",
+                  fontFamily: "inherit", cursor: "pointer" }}>
+                  Retry Cards
+                </button>
+                <button onClick={restart} style={{
+                  flex: 1, padding: "14px", background: "none", border: "1px solid #333",
+                  borderRadius: 6, color: "#888", fontSize: 13, letterSpacing: 2,
+                  textTransform: "uppercase", fontFamily: "inherit", cursor: "pointer" }}>
+                  New Topic
+                </button>
+              </div>
+            </main>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+</body>
+</html>
